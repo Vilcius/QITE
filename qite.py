@@ -4,9 +4,11 @@
 from pennylane import numpy as np
 import pennylane as qml
 import scipy.linalg as linalg
-from scipy.linalg import solve, inv, eigvals
+from scipy.linalg import solve, inv, eigvals, lstsq
 from scipy.integrate import RK45, solve_ivp
+from scipy.optimize import minimize, least_squares
 # }}}
+
 
 # set global variables {{{
 # Number of wires in the circuit
@@ -17,16 +19,17 @@ dev2 = qml.device('default.qubit', wires=['anc'] + list(range(num_wires)))
 
 # construct the Hamiltonian we wish to use
 obs = [qml.PauliZ(0) @ qml.PauliX(1),
-        qml.PauliX(0) @ qml.PauliZ(1),
-        qml.PauliZ(0) @ qml.PauliZ(1)]
+       qml.PauliX(0) @ qml.PauliZ(1),
+       qml.PauliZ(0) @ qml.PauliZ(1)]
 coeff = [1, 1, 3]
 H = qml.Hamiltonian(coeff, obs)
 
-#print(eigvals(qml.matrix(qml.PauliX(0))))
+print(eigvals(qml.matrix(H)))
 
 # initial values of the trial state parameters theta
-theta = np.array([0, 0, 0, 0, 0, 0, np.pi/2, np.pi/2],
-                    requires_grad=True)
+theta = np.array([0, 0, 0, 0, np.pi/2, np.pi/2, 0, 0],
+                 requires_grad=True)
+theta_dot = np.zeros_like(theta)
 
 # List of operations used in the Ansatz
 ansatz_ops = [
@@ -54,6 +57,8 @@ def main():
     main method to run program
     """
 
+    global theta
+
     print('-----------------------------------------')
     print('The Hamiltonian we are approximating the ground state of')
     print('H =', H)
@@ -62,12 +67,13 @@ def main():
 
     # Update the values of theta
     # TODO look at ansatz update in Aij and Ci
-    theta = np.array([np.pi/2, np.pi, np.pi/3, 0,
-                      np.pi/2, 0, np.pi/4, np.pi/2], requires_grad=True)
-    ansatz_tape.set_parameters(theta)
+    #theta = np.array([np.pi/2, np.pi, np.pi/3, 0,
+            #np.pi/2, 0, np.pi/4, np.pi/2], requires_grad=True)
+    #ansatz_tape.set_parameters(theta)
 
     print('The ansatz being used to prepare the trial state |phi(theta)>')
     print(ansatz_tape.draw())
+    print('variance of Hamiltonian w.r.t. |phi(theta)>', compute_variance())
 
     print('-----------------------------------------')
 
@@ -90,19 +96,62 @@ def main():
 
     # TODO add ODE solver to solve A theta_dot = C
 
-    def std_ode(t, theta):
-        #return inv(create_A(theta)) @ create_C(theta)
-        return linalg.solve(create_A(theta), create_C(theta))
-
-    print(std_ode(0, theta))
     print('-----------------------------------------')
 
     print('theta before =', theta)
+
+    def std_ode(t, theta):
+        # Tikhonov Regularization for ill posed matrix A and vector C
+        lamb = 1
+        A2 = np.concatenate((A, np.sqrt(lamb) * np.eye(len(theta))))
+        C2 = np.concatenate((C, np.zeros(len(theta))))
+
+        return linalg.lstsq(A2, C2)[0]
+
+    theta_dot = std_ode(0, theta)
+    print(theta_dot)
+
+    def e_t(thetas_dot, thetas):
+        # do A/C need to be create_A/C(thetas)?
+        # if so, code takes significantly longer
+        return (compute_variance()
+                + np.sum([[thetas_dot[i] * thetas_dot[j] * A[i][j]
+                            for i in range(len(thetas))]
+                            for j in range(len(thetas))])
+                + 2 * np.sum(thetas_dot[i] * C[i] for i in range(len(thetas))))
+
+    print('e_t =', e_t(theta_dot, theta))
+
+    def min_ode(t, theta):
+        # return the theta_dot = argmin || |e_t> ||^2
+        return minimize(e_t, args=theta, x0=theta_dot, method="COBYLA").x
+
     print('-----------------------------------------')
-    #theta = scipy.integrate.solve_ivp(std_ode, (0,1), theta, method='RK45').y
+    print('-----------------------------------------')
+    # DO NOT RUN THIS CODE, MAKES COMPUTER SAD
+    #theta_dott = min_ode(0, theta)
+    #print('theta_dot from min_ode =', theta_dott)
 
     # TODO add way to update theta
-    print('theta after =', theta)
+    # DO NOT RUN THIS CODE, MAKES COMPUTER SAD
+    #theta_std = solve_ivp(std_ode, (0, 1), theta, method='RK45').y[:,-1]
+    #theta_min = solve_ivp(min_ode, (0, 1), theta, method='RK45').y[:,-1]
+    #print('theta from std_ode =', theta_std)
+    print('-----------------------------------------')
+    #print('theta from min_ode =', theta_min)
+
+    print('-----------------------------------------')
+    print('-----------------------------------------')
+    print('state_init =', ansatz_with_state())
+    print(ansatz_tape.draw())
+    print('-----------------------------------------')
+    #ansatz_tape.set_parameters(theta_std)
+    #print('state_std =', ansatz_with_state())
+    #print(ansatz_tape.draw())
+    print('-----------------------------------------')
+    #ansatz_tape.set_parameters(theta_min)
+    #print('state_min =', ansatz_with_state())
+    #print(ansatz_tape.draw())
 
     # TODO graph the results
 # end of main() }}}
@@ -128,6 +177,46 @@ def ansatz(ansatz_ops, thetas):
 
     return ansatz_tape
 # end of ansatz() }}}
+
+
+@qml.qnode(dev)
+def ansatz_with_state():
+    # take the ansatz tape and then measure the expected value
+
+    for op in ansatz_tape.operations:
+        op.queue()
+
+    # why is there no better way to compute the variance of the Hamiltonian
+    return qml.state()
+
+
+# compute expval and variance {{{
+@qml.qnode(dev)
+def ansatz_with_expval():
+    # take the ansatz tape and then measure the expected value
+
+    for op in ansatz_tape.operations:
+        op.queue()
+
+    # why is there no better way to compute the variance of the Hamiltonian
+    return qml.expval(H)
+
+
+@qml.qnode(dev)
+def ansatz_with_sq_expval():
+    # take the ansatz tape and then measure the variance
+
+    for op in ansatz_tape.operations:
+        op.queue()
+
+    # why is there no better way to compute the variance of the Hamiltonian
+    return qml.expval(qml.Hermitian(np.dot(qml.matrix(H), qml.matrix(H)),
+                                    wires=H.wires))
+
+
+def compute_variance():
+    return ansatz_with_sq_expval() - (ansatz_with_expval())**2
+# }}}
 
 
 # Aij(alpha, thetas, i, j) {{{
@@ -282,7 +371,8 @@ def Ci(alpha, thetas, H, i):
 
     # apply the controlled-Hamiltonian operation
     qml.Barrier(wires=['anc'] + list(range(num_wires)))
-    qml.ControlledQubitUnitary(qml.matrix(H), control_wires='anc', wires=H.wires)
+    qml.ControlledQubitUnitary(qml.matrix(H),
+                               control_wires='anc', wires=H.wires)
     qml.Barrier(wires=['anc'] + list(range(num_wires)))
 
     # apply final Hadamard to ancilla qubit
@@ -292,8 +382,8 @@ def Ci(alpha, thetas, H, i):
 # end of Ci() }}}
 
 
-# create_A(theta) {{{
-def create_A(theta):
+# create_A(thetas) {{{
+def create_A(thetas):
     '''
     Create the matrix A
 
@@ -305,33 +395,33 @@ def create_A(theta):
         A - the matrix A
     '''
 
-    A = np.zeros((len(theta), len(theta)))
-    for i in range(len(theta)):
-        for j in range(len(theta)):
-            A[i, j] = Aij(0, theta, i, j)
+    A = np.zeros((len(thetas), len(thetas)))
+    for i in range(len(thetas)):
+        for j in range(len(thetas)):
+            A[i, j] = Aij(0, thetas, i, j)
 
     return A
 # end of create_A() }}}
 
 
-# create_C(theta) {{{
-def create_C(theta):
+# create_C(thetas) {{{
+def create_C(thetas):
     '''
     Create the vector C
 
     Parameters:
         ansatz_tape - the ansatz we are using to create the trial state
-        theta - the trainable angles used to create |phi(theta)>
+        thetas - the trainable angles used to create |phi(theta)>
         H - the Hamiltonian we are approximating the ground state of
 
     Return:
         C - the vector C
     '''
 
-    C = np.zeros(len(theta))
-    for i in range(len(theta)):
+    C = np.zeros(len(thetas))
+    for i in range(len(thetas)):
         for h in H.ops:
-            C[i] += Ci(np.pi/2, theta, h, i)
+            C[i] += Ci(np.pi/2, thetas, h, i)
 
     return C
 # end of create_C() }}}
