@@ -24,8 +24,6 @@ obs = [qml.PauliZ(0) @ qml.PauliX(1),
 coeff = [1, 1, 3]
 H = qml.Hamiltonian(coeff, obs)
 
-print(eigvals(qml.matrix(H)))
-
 # initial values of the trial state parameters theta
 theta = np.array([0, 0, 0, 0, np.pi/2, np.pi/2, 0, 0],
                  requires_grad=True)
@@ -109,7 +107,7 @@ def main():
         return linalg.lstsq(A2, C2)[0]
 
     theta_dot = std_ode(0, theta)
-    print(theta_dot)
+    print('theta_dot =', theta_dot)
 
     def e_t(thetas_dot, thetas):
         # do A/C need to be create_A/C(thetas)?
@@ -118,7 +116,7 @@ def main():
                 + np.sum([[thetas_dot[i] * thetas_dot[j] * A[i][j]
                             for i in range(len(thetas))]
                             for j in range(len(thetas))])
-                + 2 * np.sum(thetas_dot[i] * C[i] for i in range(len(thetas))))
+                - 2 * np.sum(thetas_dot[i] * C[i] for i in range(len(thetas))))
 
     print('e_t =', e_t(theta_dot, theta))
 
@@ -134,7 +132,7 @@ def main():
 
     # TODO add way to update theta
     # DO NOT RUN THIS CODE, MAKES COMPUTER SAD
-    #theta_std = solve_ivp(std_ode, (0, 1), theta, method='RK45').y[:,-1]
+    theta_std = solve_ivp(std_ode, (0, 1), theta, method='RK45').y[:,-1]
     #theta_min = solve_ivp(min_ode, (0, 1), theta, method='RK45').y[:,-1]
     #print('theta from std_ode =', theta_std)
     print('-----------------------------------------')
@@ -145,9 +143,9 @@ def main():
     print('state_init =', ansatz_with_state())
     print(ansatz_tape.draw())
     print('-----------------------------------------')
-    #ansatz_tape.set_parameters(theta_std)
-    #print('state_std =', ansatz_with_state())
-    #print(ansatz_tape.draw())
+    ansatz_tape.set_parameters(theta_std)
+    print('state_std =', ansatz_with_state())
+    print(ansatz_tape.draw())
     print('-----------------------------------------')
     #ansatz_tape.set_parameters(theta_min)
     #print('state_min =', ansatz_with_state())
@@ -179,18 +177,19 @@ def ansatz(ansatz_ops, thetas):
 # end of ansatz() }}}
 
 
+# compute state, expected value, and variance {{{
 @qml.qnode(dev)
 def ansatz_with_state():
     # take the ansatz tape and then measure the expected value
 
+    #for op in ansatz_tape.operations:
+        #op.queue()
     for op in ansatz_tape.operations:
         op.queue()
 
-    # why is there no better way to compute the variance of the Hamiltonian
     return qml.state()
 
 
-# compute expval and variance {{{
 @qml.qnode(dev)
 def ansatz_with_expval():
     # take the ansatz tape and then measure the expected value
@@ -198,7 +197,6 @@ def ansatz_with_expval():
     for op in ansatz_tape.operations:
         op.queue()
 
-    # why is there no better way to compute the variance of the Hamiltonian
     return qml.expval(H)
 
 
